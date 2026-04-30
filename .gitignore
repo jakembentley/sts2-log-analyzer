@@ -1,8 +1,49 @@
+# Virtual environment
 .venv/
+
+# Python bytecode
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+
+# Build / packaging
 dist/
 build/
 *.spec
+*.egg-info/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# User settings & cache (written to ~ at runtime, but guard the repo too)
 .sts2-analyzer.json
+.sts2-analyzer-cache/
+
+# Secrets / credentials
+.env
+.env.*
+*.pem
+*.key
+*.cert
+secrets.py
+
+# Game log files (may contain personal playthroughs)
+*.log
+logs/
+
+# IDE / editor
+.idea/
+.vscode/
+*.suo
+*.user
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/

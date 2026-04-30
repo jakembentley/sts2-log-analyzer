@@ -11,6 +11,7 @@ from .file_panel import FilePanel, DEFAULT_LOGS_DIR
 
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".sts2-analyzer.json")
 LIVE_POLL_MS = 5000
+AUTO_CACHE_MS = 30_000
 
 
 class App(ctk.CTk):
@@ -28,9 +29,11 @@ class App(ctk.CTk):
         self._current_log_file = None
         self._selected_run = None
         self._last_mtime: dict[str, float] = {}
+        self._viewing_cache = False
 
         self._build_layout()
         self._refresh()
+        self._schedule_auto_cache()
 
     # ------------------------------------------------------------------
     # Layout
@@ -47,6 +50,8 @@ class App(ctk.CTk):
             self,
             on_file_selected=self._on_file_selected,
             on_refresh=self._refresh,
+            on_view_cache=self._on_view_cache,
+            on_change_folder=self._on_change_folder,
         )
         self._file_panel.grid(row=0, column=0, sticky="nsew")
 
@@ -97,25 +102,35 @@ class App(ctk.CTk):
     def _refresh(self) -> None:
         from analyzer.parser import LogParser
         from analyzer.aggregator import aggregate
+        from analyzer.cache import cache_file_if_changed, cache_dir, cache_count
+
+        active_dir = cache_dir() if self._viewing_cache else self._logs_dir
 
         t0 = time.perf_counter()
-        log_files = LogParser().parse_directory(self._logs_dir)
+        log_files = LogParser().parse_directory(active_dir)
         elapsed = time.perf_counter() - t0
+
+        # Cache a copy of every live log file as backup
+        if not self._viewing_cache:
+            for lf in log_files:
+                cache_file_if_changed(lf.path)
 
         self._log_files = log_files
         self._file_panel.populate(log_files)
 
         total_runs = sum(len(lf.runs) for lf in log_files)
+        source_label = f"cache ({cache_count()} files)" if self._viewing_cache else active_dir
         self._set_status(
-            f"{self._logs_dir} | {len(log_files)} files | {total_runs} runs | parsed in {elapsed:.2f}s"
+            f"{source_label} | {len(log_files)} files | {total_runs} runs | parsed in {elapsed:.2f}s"
         )
 
-        # Track mtimes for live reload
-        for lf in log_files:
-            try:
-                self._last_mtime[lf.filename] = os.path.getmtime(lf.path)
-            except OSError:
-                pass
+        # Track mtimes for live reload (only relevant when viewing live logs)
+        if not self._viewing_cache:
+            for lf in log_files:
+                try:
+                    self._last_mtime[lf.filename] = os.path.getmtime(lf.path)
+                except OSError:
+                    pass
 
     def _on_file_selected(self, log_file) -> None:
         self._current_log_file = log_file
@@ -151,6 +166,30 @@ class App(ctk.CTk):
                 break
 
     # ------------------------------------------------------------------
+    # Folder selection
+    # ------------------------------------------------------------------
+
+    def _on_change_folder(self, path: str) -> None:
+        self._logs_dir = path
+        self._settings["logs_dir"] = path
+        self._save_settings()
+        self._viewing_cache = False
+        self._file_panel.set_viewing_cache(False)
+        self._refresh()
+
+    # ------------------------------------------------------------------
+    # Cache
+    # ------------------------------------------------------------------
+
+    def _on_view_cache(self) -> None:
+        self._viewing_cache = not self._viewing_cache
+        self._file_panel.set_viewing_cache(self._viewing_cache)
+        # Disable live reload while browsing cache
+        if self._viewing_cache:
+            self._file_panel._live_var.set(False)
+        self._refresh()
+
+    # ------------------------------------------------------------------
     # Live reload
     # ------------------------------------------------------------------
 
@@ -175,6 +214,8 @@ class App(ctk.CTk):
 
         if mtime != self._last_mtime.get(lf.filename):
             self._last_mtime[lf.filename] = mtime
+            from analyzer.cache import cache_file_if_changed
+            cache_file_if_changed(lf.path)
             # Re-parse just this file
             from analyzer.parser import LogParser
             updated = LogParser().parse_file(lf.path)
@@ -186,6 +227,28 @@ class App(ctk.CTk):
             self._on_file_selected(updated)
 
         self._schedule_live_check()
+
+    # ------------------------------------------------------------------
+    # Auto-cache
+    # ------------------------------------------------------------------
+
+    def _schedule_auto_cache(self) -> None:
+        self.after(AUTO_CACHE_MS, self._auto_cache_check)
+
+    def _auto_cache_check(self) -> None:
+        if not self._viewing_cache:
+            from analyzer.cache import cache_file_if_changed
+            try:
+                cached = sum(
+                    cache_file_if_changed(e.path)
+                    for e in os.scandir(self._logs_dir)
+                    if e.name.endswith(".log")
+                )
+                if cached:
+                    self._set_status(f"Auto-cached {cached} new/updated log file(s)")
+            except OSError:
+                pass
+        self._schedule_auto_cache()
 
     # ------------------------------------------------------------------
     # Settings
